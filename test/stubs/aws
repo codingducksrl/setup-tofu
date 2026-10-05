@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Stub AWS CLI for the tests. Supports exactly the calls setup.sh makes:
+#   aws sts get-caller-identity [--profile P] --region R --query Account --output text
+#   aws ssm get-parameters-by-path --path /p/ --with-decryption --profile P --region R --output json
+#
+# Driven by environment variables:
+#   STUB_PROFILE          the only profile that exists (default tf-state)
+#   STUB_STATE_ACCOUNT    account behind STUB_PROFILE
+#   STUB_AMBIENT_ACCOUNT  account behind the ambient (environment) credentials
+#   STUB_PARAMS_FILE      {"Parameters": [...]} returned, filtered like the real API
+#   STUB_AWS_LOG          every invocation's arguments are appended here
+set -euo pipefail
+
+fail() { printf 'aws stub: %s\n' "$*" >&2; exit 255; }
+
+[[ -z "${STUB_AWS_LOG:-}" ]] || printf '%s\n' "$*" >>"$STUB_AWS_LOG"
+(($# >= 2)) || fail "expected a service and an operation"
+call="$1 $2"
+shift 2
+
+profile="" region="" query="" output="" path="" decrypt=false
+while (($#)); do
+  case "$1" in
+    --profile) profile=$2; shift 2 ;;
+    --region) region=$2; shift 2 ;;
+    --query) query=$2; shift 2 ;;
+    --output) output=$2; shift 2 ;;
+    --path) path=$2; shift 2 ;;
+    --with-decryption) decrypt=true; shift ;;
+    *) fail "unsupported argument $1" ;;
+  esac
+done
+[[ -n "$region" ]] || fail "--region is required"
+if [[ -n "$profile" && "$profile" != "${STUB_PROFILE:-tf-state}" ]]; then
+  printf '\nThe config profile (%s) could not be found\n' "$profile" >&2
+  exit 255
+fi
+
+case "$call" in
+  "sts get-caller-identity")
+    [[ "$query" == "Account" && "$output" == "text" ]] || fail "expected --query Account --output text"
+    if [[ -n "$profile" ]]; then
+      printf '%s\n' "$STUB_STATE_ACCOUNT"
+    else
+      printf '%s\n' "$STUB_AMBIENT_ACCOUNT"
+    fi
+    ;;
+  "ssm get-parameters-by-path")
+    [[ -n "$profile" ]] || fail "parameters must be read through the state profile"
+    [[ "$decrypt" == true ]] || fail "--with-decryption is required"
+    [[ "$output" == "json" ]] || fail "--output json is required"
+    [[ "$path" == /*/ ]] || fail "--path must be absolute and end in /"
+    # Direct children of the path only, as without --recursive.
+    jq --arg p "$path" '{Parameters: [.Parameters[]
+      | select((.Name | startswith($p)) and ((.Name | ltrimstr($p)) | contains("/") | not))]}' \
+      "$STUB_PARAMS_FILE"
+    ;;
+  *) fail "unsupported call: $call" ;;
+esac

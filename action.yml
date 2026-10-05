@@ -1,0 +1,164 @@
+name: tofu-setup
+description: >-
+  Prepare a job to run plain `tofu init/plan/apply` against a target AWS account
+  while OpenTofu state and configuration live in a separate state account.
+
+inputs:
+  env:
+    description: >-
+      Environment: dev, staging or production. Used in the defaults of ssm-prefix,
+      state-key and state-role-arn.
+    required: true
+  state-role-arn:
+    description: >-
+      Role in the state account, assumed directly via GitHub OIDC.
+      Defaults to arn:aws:iam::<state-account>:role/terraform-<env>-action-role.
+    required: false
+    default: ""
+  target-role-arn:
+    description: >-
+      Role in the target account, assumed directly via GitHub OIDC.
+      Defaults to arn:aws:iam::<target-account>:role/terraform.
+    required: false
+    default: ""
+  state-account:
+    description: 12-digit id of the state account. The state profile must resolve to it.
+    required: true
+  target-account:
+    description: 12-digit id of the target account. The ambient credentials must resolve to it.
+    required: true
+  state-bucket:
+    description: S3 bucket holding the state.
+    required: true
+  state-key:
+    description: State object key. Defaults to <env>/terraform.tfstate.
+    required: false
+    default: ""
+  state-region:
+    description: Region of the state bucket and of the SSM parameters.
+    required: true
+  target-region:
+    description: Region exported as AWS_REGION for the provider. Defaults to state-region.
+    required: false
+    default: ""
+  state-profile:
+    description: Name of the AWS profile written for the state role.
+    required: false
+    default: tf-state
+  ssm-prefix:
+    description: Parameter path to read (direct children only). Defaults to /terraform/<env>.
+    required: false
+    default: ""
+  working-directory:
+    description: Root module directory. The backend file is written there and its variable blocks are scanned.
+    required: false
+    default: .
+  backend-file:
+    description: Name of the generated backend file. Must end in _override.tf.
+    required: false
+    default: tfw_backend_override.tf
+  use-lockfile:
+    description: Use S3 native state locking (use_lockfile = true, OpenTofu >= 1.10).
+    required: false
+    default: "true"
+  strict-vars:
+    description: Fail when a parameter has no matching variable block instead of warning.
+    required: false
+    default: "false"
+  disable-input:
+    description: Export TF_INPUT=0 and TF_IN_AUTOMATION=1.
+    required: false
+    default: "true"
+  role-duration-seconds:
+    description: Session duration for both roles.
+    required: false
+    default: "3600"
+
+outputs:
+  variable-names:
+    description: Space-separated names of the exported variables, without the TF_VAR_ prefix. Names only, never values.
+    value: ${{ steps.setup.outputs.variable-names }}
+  secret-count:
+    description: Number of SecureString parameters exported (each one masked).
+    value: ${{ steps.setup.outputs.secret-count }}
+  backend-file:
+    description: Absolute path of the generated backend file.
+    value: ${{ steps.setup.outputs.backend-file }}
+
+runs:
+  using: composite
+  steps:
+    # Inputs reach the script only through env, never through ${{ }} in run.
+    # This step also resolves the role ARNs for the two credential steps.
+    - name: Validate inputs
+      id: check
+      shell: bash
+      env:
+        TFS_ENV: ${{ inputs.env }}
+        TFS_STATE_ROLE_ARN: ${{ inputs.state-role-arn }}
+        TFS_TARGET_ROLE_ARN: ${{ inputs.target-role-arn }}
+        TFS_STATE_ACCOUNT: ${{ inputs.state-account }}
+        TFS_TARGET_ACCOUNT: ${{ inputs.target-account }}
+        TFS_STATE_BUCKET: ${{ inputs.state-bucket }}
+        TFS_STATE_KEY: ${{ inputs.state-key }}
+        TFS_STATE_REGION: ${{ inputs.state-region }}
+        TFS_TARGET_REGION: ${{ inputs.target-region }}
+        TFS_STATE_PROFILE: ${{ inputs.state-profile }}
+        TFS_SSM_PREFIX: ${{ inputs.ssm-prefix }}
+        TFS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        TFS_BACKEND_FILE: ${{ inputs.backend-file }}
+        TFS_USE_LOCKFILE: ${{ inputs.use-lockfile }}
+        TFS_STRICT_VARS: ${{ inputs.strict-vars }}
+        TFS_DISABLE_INPUT: ${{ inputs.disable-input }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/setup.sh" check
+
+    # Both roles are assumed directly from the job's OIDC token: no role
+    # chaining, and no AWS_* variables from the job translated into inputs.
+    - name: AWS credentials (state)
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        role-to-assume: ${{ steps.check.outputs.state-role-arn }}
+        aws-region: ${{ inputs.state-region }}
+        # With aws-profile set, credentials go to ~/.aws/{credentials,config}
+        # only; output-env-credentials stays at its default (false).
+        aws-profile: ${{ inputs.state-profile }}
+        overwrite-aws-profile: true
+        allowed-account-ids: ${{ inputs.state-account }}
+        role-duration-seconds: ${{ inputs.role-duration-seconds }}
+        role-session-name: tofu-state-${{ github.run_id }}
+        role-chaining: false
+        translate-env-variables: false
+
+    - name: AWS credentials (target)
+      uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      with:
+        role-to-assume: ${{ steps.check.outputs.target-role-arn }}
+        aws-region: ${{ inputs.target-region || inputs.state-region }}
+        allowed-account-ids: ${{ inputs.target-account }}
+        role-duration-seconds: ${{ inputs.role-duration-seconds }}
+        role-session-name: tofu-deploy-${{ github.run_id }}
+        role-chaining: false
+        translate-env-variables: false
+
+    - name: Backend + variables
+      id: setup
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        TFS_ENV: ${{ inputs.env }}
+        TFS_STATE_ROLE_ARN: ${{ inputs.state-role-arn }}
+        TFS_TARGET_ROLE_ARN: ${{ inputs.target-role-arn }}
+        TFS_STATE_ACCOUNT: ${{ inputs.state-account }}
+        TFS_TARGET_ACCOUNT: ${{ inputs.target-account }}
+        TFS_STATE_BUCKET: ${{ inputs.state-bucket }}
+        TFS_STATE_KEY: ${{ inputs.state-key }}
+        TFS_STATE_REGION: ${{ inputs.state-region }}
+        TFS_TARGET_REGION: ${{ inputs.target-region }}
+        TFS_STATE_PROFILE: ${{ inputs.state-profile }}
+        TFS_SSM_PREFIX: ${{ inputs.ssm-prefix }}
+        TFS_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        TFS_BACKEND_FILE: ${{ inputs.backend-file }}
+        TFS_USE_LOCKFILE: ${{ inputs.use-lockfile }}
+        TFS_STRICT_VARS: ${{ inputs.strict-vars }}
+        TFS_DISABLE_INPUT: ${{ inputs.disable-input }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/setup.sh"

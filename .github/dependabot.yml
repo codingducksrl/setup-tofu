@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Covers .github/workflows/ and the root action.yml. Dependabot keeps the
+  # SHA pins and updates the version comment next to them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

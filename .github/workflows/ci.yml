@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest # bash 5, GNU coreutils
+            bash: bash
+          - os: macos-latest # bash 3.2, BSD userland
+            bash: /bin/bash
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shellcheck
+        if: runner.os == 'Linux'
+        run: |
+          command -v shellcheck >/dev/null || { sudo apt-get update && sudo apt-get install -y shellcheck; }
+          shellcheck --version
+          shellcheck -s bash scripts/setup.sh test/setup_test.sh test/stubs/aws test/stubs/tofu
+
+      - name: Tests
+        env:
+          BASH_UNDER_TEST: ${{ matrix.bash }}
+          REQUIRE_SHELLCHECK: ${{ runner.os == 'Linux' }}
+        run: |
+          "$BASH_UNDER_TEST" --version | head -n 1
+          "$BASH_UNDER_TEST" test/setup_test.sh

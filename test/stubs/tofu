@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Stub OpenTofu: prints its arguments and the names (never the values) of the
+# TF_* variables a real `tofu` would see, plus whether a backend override exists.
+set -euo pipefail
+
+printf 'tofu %s\n' "$*"
+compgen -e | grep -E '^TF_' | LC_ALL=C sort || true
+for f in *_override.tf; do
+  if [[ -e "$f" ]]; then printf 'override %s\n' "$f"; fi
+done

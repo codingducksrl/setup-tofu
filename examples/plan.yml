@@ -1,0 +1,46 @@
+# Plan on pull requests. Copy to .github/workflows/ and adjust the inputs.
+#
+# The job runs in the GitHub environment `production`, because the roles trust
+# only that environment's OIDC subject. As a consequence:
+# - if the environment has required reviewers, every pull-request plan waits
+#   for approval; approve only after reviewing the change, workflow included,
+#   since it runs with the production roles;
+# - if the environment only allows selected deployment branches, pull-request
+#   runs are rejected.
+# Pull requests from forks get no OIDC token, so this only works for branches
+# of the repository itself.
+name: tofu plan
+
+on:
+  pull_request:
+
+permissions:
+  id-token: write # OIDC token for both roles
+  contents: read
+  # pull-requests: write # only if you add a step that comments the plan
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    environment: production
+    # Keep this job minimal: every later step sees the TF_VAR_* values.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.11.x"
+          tofu_wrapper: false # plain `tofu`, no output captured into step outputs
+
+      - uses: your-org/tofu-setup@<sha> # vX.Y.Z
+        with:
+          env: production
+          state-account: "111111111111"
+          target-account: "222222222222"
+          state-bucket: my-state-bucket
+          state-region: eu-south-1
+
+      - run: tofu init
+      - run: tofu plan

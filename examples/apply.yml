@@ -1,0 +1,52 @@
+# Plan and apply on the main branch, in one job. Copy to .github/workflows/
+# and adjust the inputs.
+#
+# The job runs in the GitHub environment `production`:
+# - the roles trust only that environment's OIDC subject
+#   (repo:<org>/<repo>:environment:production);
+# - its required reviewers (Settings > Environments > production) must approve
+#   before the job starts. Without required reviewers there is no approval.
+name: tofu apply
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write # OIDC token for both roles
+  contents: read
+
+concurrency:
+  group: tofu-production
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    # Keep this job minimal: every later step sees the TF_VAR_* values.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.11.x"
+          tofu_wrapper: false # plain `tofu`, no output captured into step outputs
+
+      - uses: your-org/tofu-setup@<sha> # vX.Y.Z
+        with:
+          env: production
+          state-account: "111111111111"
+          target-account: "222222222222"
+          state-bucket: my-state-bucket
+          state-region: eu-south-1
+
+      - run: tofu init
+
+      # plan.bin stays on the runner: it holds the values of non-ephemeral
+      # variables in plain text, so don't upload it as an artifact.
+      - run: tofu plan -out plan.bin
+
+      - run: tofu apply plan.bin
